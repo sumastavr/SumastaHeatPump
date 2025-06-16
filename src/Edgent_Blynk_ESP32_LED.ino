@@ -15,6 +15,9 @@
 
 #define APP_DEBUG
 
+#define HEATING_CTRL_PIN 26
+#define COOLING_CTRL_PIN 32
+
 #include "BlynkEdgent.h"
 
 #define LED_PIN 2  // Use pin 2 for LED (change it, if your board uses another pin)
@@ -24,6 +27,21 @@ float outdoorTemp = 0;
 float waterOutTemp = 0;
 float waterInTemp = 0;
 float tapWaterTemp = 0;
+
+void getWaterTemps() {
+  uint8_t wakeCmd[] = { 0x01, 0x04, 0x00, 0x0E, 0x00, 0x03, 0xD1, 0xC8 };
+  Serial2.write(wakeCmd, sizeof(wakeCmd));
+  Serial.println("Get Water Temps");
+}
+
+void getOutdoorTemps() {
+  // 01 04 00 3A 00 01 11 C7
+  uint8_t wakeCmd[] = { 0x01, 0x04, 0x00, 0x3A, 0x00, 0x01, 0x11, 0xC7 };
+  Serial2.write(wakeCmd, sizeof(wakeCmd));
+  Serial.print(millis());
+  Serial.print(" : ");
+  Serial.println("Get Water Temps");
+}
 
 
 // V0 is a datastream used to transfer and store LED switch state.
@@ -36,14 +54,44 @@ BLYNK_WRITE(V0)
   int value = param.asInt();
 
   if (value == 1) {
-    digitalWrite(LED_PIN, HIGH);
-    Serial.print("value =");
-    Serial.println(value);
-  } else {
-    digitalWrite(LED_PIN, LOW);
-    Serial.print("value = ");
-    Serial.println(value);
+    getWaterTemps();
+    delay(200);
+    getOutdoorTemps();
+  } 
+}
+
+// Air conditioning Mode 
+BLYNK_WRITE(V5){
+
+  int value = param.asInt();
+
+  if (value == 0) {
+
+    Serial.println("AC OFF");
+    digitalWrite(HEATING_CTRL_PIN,LOW);
+    digitalWrite(COOLING_CTRL_PIN,LOW);
+
+  } else if (value == 1) {
+ 
+    Serial.println("Heating Mode");
+    digitalWrite(HEATING_CTRL_PIN,HIGH);
+    digitalWrite(COOLING_CTRL_PIN,LOW);
+
+  } else if (value == 2) {
+ 
+    Serial.println("Cooling Mode");
+    digitalWrite(HEATING_CTRL_PIN,LOW);
+    digitalWrite(COOLING_CTRL_PIN,HIGH);
   }
+}
+
+// Setpoint Temperature
+BLYNK_WRITE(V7){
+
+  int value = param.asInt();
+  float setpointTemp=value/10.0;
+  Blynk.virtualWrite(V8, setpointTemp);
+  
 }
 
 #define FRAME_TIMEOUT_MS 20
@@ -78,6 +126,9 @@ void parseFrame(uint8_t *buf, size_t len) {
     int16_t rawOutdoor = (buf[3] << 8) | buf[4];
     outdoorTemp = rawOutdoor / 10.0;
     Serial.printf("🌤️  Outdoor Temp: %.1f °C\n", outdoorTemp);
+    float temperatureIndoor = temperatureRead();
+    Blynk.virtualWrite(V1, outdoorTemp);
+    Blynk.virtualWrite(V6, temperatureIndoor);
   }
 
   // Water Frame: 3 registers (6 data bytes)
@@ -94,13 +145,10 @@ void parseFrame(uint8_t *buf, size_t len) {
     Serial.printf("   IN   : %.1f °C\n", waterInTemp);
     Serial.printf("   OUT  : %.1f °C\n", waterOutTemp);
     Serial.printf("   TAP  : %.1f °C\n", tapWaterTemp);
+    Blynk.virtualWrite(V2, waterOutTemp);
+    Blynk.virtualWrite(V3, waterInTemp);
+    Blynk.virtualWrite(V4, tapWaterTemp);
   }
-}
-
-void wakeUpHeatPump() {
-  uint8_t wakeCmd[] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x3C, 0xC4, 0x0E };
-  Serial2.write(wakeCmd, sizeof(wakeCmd));
-  Serial.println("Sent wake-up poll to heat pump");
 }
 
 void setup()
@@ -114,37 +162,57 @@ void setup()
   BlynkEdgent.begin();
 
   Serial2.begin(19200, SERIAL_8N1, 22, 19);
+  pinMode(39,INPUT);
+
+  pinMode(HEATING_CTRL_PIN, OUTPUT);
+  pinMode(COOLING_CTRL_PIN, OUTPUT);
+
+  digitalWrite(HEATING_CTRL_PIN,LOW);
+  digitalWrite(COOLING_CTRL_PIN,LOW);
 
 }
 
 long requestTimer=millis();
 
+bool debug=false;
+
 void loop() {
+
   BlynkEdgent.run();
 
-  //while (Serial2.available()){
-  //  Serial.write(Serial2.read());
-  //}
-
-  if (millis()-requestTimer>5000){
-    wakeUpHeatPump();
-    requestTimer=millis();
-  }
-
-  while (Serial2.available()) {
-    uint8_t b = Serial2.read();
-    if (framePos < MAX_FRAME_SIZE) {
-      frameBuffer[framePos++] = b;
-      lastByteTime = millis();
+  if (debug==true){
+    while (Serial2.available()){
+      Serial.write(Serial2.read());
     }
+  }else{
+
+    if (millis()-requestTimer>60000*15){
+      getWaterTemps();
+      delay(200);
+      getOutdoorTemps();
+      requestTimer=millis();
+    }
+
+    while (Serial2.available()) {
+      uint8_t b = Serial2.read();
+      if (framePos < MAX_FRAME_SIZE) {
+        frameBuffer[framePos++] = b;
+        lastByteTime = millis();
+      }
+    }
+
+    if (framePos > 0 && millis() - lastByteTime > FRAME_TIMEOUT_MS) {
+      processBuffer(frameBuffer, framePos);
+      framePos = 0;
+    }
+    
   }
 
-  if (framePos > 0 && millis() - lastByteTime > FRAME_TIMEOUT_MS) {
-    processBuffer(frameBuffer, framePos);
-    framePos = 0;
+  if (digitalRead(39)==LOW){
+    delay(300);
+    Serial.println("Debug Toggled");
+    debug=!debug;
   }
-
-
 
   delay(10);
 }
