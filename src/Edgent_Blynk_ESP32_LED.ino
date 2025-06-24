@@ -28,6 +28,9 @@ float waterOutTemp = 0;
 float waterInTemp = 0;
 float tapWaterTemp = 0;
 
+long windowPushTimer=millis();
+long pushTimeout=1200;
+
 void getWaterTemps() {
   uint8_t wakeCmd[] = { 0x01, 0x04, 0x00, 0x0E, 0x00, 0x03, 0xD1, 0xC8 };
   Serial2.write(wakeCmd, sizeof(wakeCmd));
@@ -54,9 +57,24 @@ BLYNK_WRITE(V0)
   int value = param.asInt();
 
   if (value == 1) {
+    Serial2.flush();
     getWaterTemps();
     delay(200);
     getOutdoorTemps();
+    windowPushTimer=millis();
+  } 
+}
+
+BLYNK_WRITE(V10)
+{
+  // Local variable `value` stores the incoming LED switch state (1 or 0)
+  // Based on this value, the physical LED on the board will be on or off:
+  int value = param.asInt();
+
+  if (value == 1) {
+    uint8_t wakeCmd[] = { 0x01, 0x05, 0x00, 0x6C, 0xFF, 0x00, 0x4C, 0x27 };
+    Serial2.write(wakeCmd, sizeof(wakeCmd));
+    Serial.println("Reset E101 Temps");
   } 
 }
 
@@ -127,8 +145,12 @@ void parseFrame(uint8_t *buf, size_t len) {
     outdoorTemp = rawOutdoor / 10.0;
     Serial.printf("🌤️  Outdoor Temp: %.1f °C\n", outdoorTemp);
     float temperatureIndoor = temperatureRead();
-    Blynk.virtualWrite(V1, outdoorTemp);
-    Blynk.virtualWrite(V6, temperatureIndoor);
+
+    if (millis()-windowPushTimer<pushTimeout){
+      Blynk.virtualWrite(V1, outdoorTemp);
+      Blynk.virtualWrite(V6, temperatureIndoor);
+    }
+
   }
 
   // Water Frame: 3 registers (6 data bytes)
@@ -145,9 +167,12 @@ void parseFrame(uint8_t *buf, size_t len) {
     Serial.printf("   IN   : %.1f °C\n", waterInTemp);
     Serial.printf("   OUT  : %.1f °C\n", waterOutTemp);
     Serial.printf("   TAP  : %.1f °C\n", tapWaterTemp);
-    Blynk.virtualWrite(V2, waterOutTemp);
-    Blynk.virtualWrite(V3, waterInTemp);
-    Blynk.virtualWrite(V4, tapWaterTemp);
+
+    if (millis()-windowPushTimer<pushTimeout){
+      Blynk.virtualWrite(V2, waterOutTemp);
+      Blynk.virtualWrite(V3, waterInTemp);
+      Blynk.virtualWrite(V4, tapWaterTemp);
+    }
   }
 }
 
@@ -186,11 +211,13 @@ void loop() {
     }
   }else{
 
-    if (millis()-requestTimer>60000*15){
+    if (millis()-requestTimer>60000*30){
+      Serial2.flush();
       getWaterTemps();
       delay(200);
       getOutdoorTemps();
       requestTimer=millis();
+      windowPushTimer=millis();
     }
 
     while (Serial2.available()) {
@@ -205,7 +232,7 @@ void loop() {
       processBuffer(frameBuffer, framePos);
       framePos = 0;
     }
-    
+
   }
 
   if (digitalRead(39)==LOW){
