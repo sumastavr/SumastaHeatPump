@@ -20,7 +20,41 @@
 
 #include "BlynkEdgent.h"
 
-#define LED_PIN 2  // Use pin 2 for LED (change it, if your board uses another pin)
+#include <Adafruit_NeoPixel.h>
+
+// Which pin on the Arduino is connected to the NeoPixels?
+#define PIN        27 // On Trinket or Gemma, suggest changing this to 1
+
+// How many NeoPixels are attached to the Arduino?
+#define NUMPIXELS 25 // Popular NeoPixel ring size
+
+// When setting up the NeoPixel library, we tell it how many pixels,
+// and which pin to use to send signals. Note that for older NeoPixel
+// strips you might need to change the third parameter -- see the
+// strandtest example for more information on possible values.
+Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
+
+#define DELAYVAL 500 // Time (in milliseconds) to pause between pixels
+
+#include "ESPNowW.h"
+#include <WiFiUdp.h>
+
+const unsigned int localPort = 12345;        // Local port to listen for incoming UDP packets on this ESP32
+
+char packetBuffer[255]; // Buffer to hold incoming packet
+
+WiFiUDP Udp;
+
+uint8_t mac[] = {0x34, 0x85, 0x18, 0x04, 0xC6, 0xBC};
+// this MAC d4:d4:da:98:1a:18
+
+// Our ESP-NOW payload structure (must match sender's)
+typedef struct struct_temp_payload {
+  char temperatureStr[16]; // Buffer for temperature string
+} struct_temp_payload;
+
+// Create a struct_temp_payload object for received data
+struct_temp_payload receivedData;
 
 // Parsed temperature variables (in °C)
 float outdoorTemp = 0;
@@ -32,6 +66,95 @@ long windowPushTimer=millis();
 long pushTimeout=1200;
 
 int heatPumpState=0;
+
+float temperatureIndoor=23.45;
+float humidityIndoor=50.0;
+float pressureInddor=1000;
+float contactlessFloor=20.0;
+float contactlessAmbient=23.0;
+
+void onRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
+  /*
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4],
+             mac_addr[5]);
+    Serial.print("Last Packet Recv from: ");
+    Serial.println(macStr);
+    Serial.print("Last Packet Recv Data: ");
+    // if it could be a string, print as one
+    if (data[data_len - 1] == 0)
+        Serial.printf("%s\n", data);
+    // additionally print as hex
+    for (int i = 0; i < data_len; i++) {
+        Serial.printf("%x ", data[i]);
+    }
+    Serial.println("");
+    */
+       // Ensure the received data size matches our struct
+       if (len == sizeof(struct_temp_payload)) {
+        memcpy(&receivedData, data, sizeof(receivedData));
+
+        Serial.print("Received temperature string: '");
+        Serial.print(receivedData.temperatureStr);
+        Serial.println("'");
+
+        // Convert the received string back to a float
+        float receivedTemperature = atof(receivedData.temperatureStr);
+        Serial.print("Converted to float: ");
+        Serial.print(receivedTemperature, 2); // Print with 2 decimal places
+        Serial.println(" C");
+
+        temperatureIndoor=receivedTemperature;
+
+        matrixClear();
+        delay(200);
+
+        switch(heatPumpState){
+          case 0: matrixGreen();break;
+          case 1: matrixRed();break;
+          case 2: matrixBlue();break;
+        }
+
+        // You can now use 'receivedTemperature' for further processing,
+        // e.g., display on an LCD, send to another system, etc.
+    } else {
+        Serial.print("Received unexpected data length: ");
+        Serial.println(len);
+    }
+}
+
+void matrixGreen(){
+  for(int i=0; i<NUMPIXELS; i++) { // For each pixel...
+    pixels.setPixelColor(i, pixels.Color(0, 50, 0));
+  }
+  pixels.show();   // Send the updated pixel colors to the hardware.
+}
+
+void matrixRed(){
+  for(int i=0; i<NUMPIXELS; i++) { // For each pixel...
+    pixels.setPixelColor(i, pixels.Color(50, 0, 0));
+  }
+  pixels.show();   // Send the updated pixel colors to the hardware.
+}
+
+void matrixBlue(){
+  for(int i=0; i<NUMPIXELS; i++) { // For each pixel...
+    pixels.setPixelColor(i, pixels.Color(0, 0, 50));
+  }
+  pixels.show();   // Send the updated pixel colors to the hardware.
+}
+
+void matrixClear(){
+  for(int i=0; i<NUMPIXELS; i++) { // For each pixel...
+    pixels.setPixelColor(i, pixels.Color(0, 0, 0));
+  }
+  pixels.show();   // Send the updated pixel colors to the hardware.
+}
+
+#define LED_PIN 2  // Use pin 2 for LED (change it, if your board uses another pin)
+
+
 
 // Standard CRC-16-MODBUS calculation function (re-used from previous examples).
 // This function is kept for reference or if you later decide to calculate CRCs
@@ -318,18 +441,21 @@ BLYNK_WRITE(V5){
     Serial.println("AC OFF");
     digitalWrite(HEATING_CTRL_PIN,LOW);
     digitalWrite(COOLING_CTRL_PIN,LOW);
+    matrixGreen();
 
   } else if (value == 1) {
  
     Serial.println("Heating Mode");
     digitalWrite(HEATING_CTRL_PIN,HIGH);
     digitalWrite(COOLING_CTRL_PIN,LOW);
+    matrixRed();
 
   } else if (value == 2) {
  
     Serial.println("Cooling Mode");
     digitalWrite(HEATING_CTRL_PIN,LOW);
     digitalWrite(COOLING_CTRL_PIN,HIGH);
+    matrixBlue();
   }
 }
 
@@ -492,12 +618,15 @@ void parseFrame(uint8_t *buf, size_t len) {
   if (byteCount == 2 && len >= 7) {
     int16_t rawOutdoor = (buf[3] << 8) | buf[4];
     outdoorTemp = rawOutdoor / 10.0;
-    Serial.printf("🌤️  Outdoor Temp: %.1f °C\n", outdoorTemp);
-    float temperatureIndoor = temperatureRead();
+    Serial.printf("🌤️  Outdoor Temp: %.1f °C\n", outdoorTemp); 
 
     if (millis()-windowPushTimer<pushTimeout){
       Blynk.virtualWrite(V1, outdoorTemp);
       Blynk.virtualWrite(V6, temperatureIndoor);
+      Blynk.virtualWrite(V14, humidityIndoor);
+      Blynk.virtualWrite(V15, pressureInddor);
+      Blynk.virtualWrite(V16, contactlessFloor);
+      Blynk.virtualWrite(V17, contactlessAmbient);
     }
 
   }
@@ -525,8 +654,11 @@ void parseFrame(uint8_t *buf, size_t len) {
   }
 }
 
+
+
 void setup()
 {
+
   pinMode(LED_PIN, OUTPUT);
 
   // Debug console. Make sure you have the same baud rate selected in your serial monitor
@@ -544,6 +676,17 @@ void setup()
   digitalWrite(HEATING_CTRL_PIN,LOW);
   digitalWrite(COOLING_CTRL_PIN,LOW);
 
+  //ESPNow.init();
+  //ESPNow.reg_recv_cb(onRecv);
+
+  pixels.begin(); // INITIALIZE NeoPixel strip object (REQUIRED)
+  pixels.clear(); // Set all pixel colors to 'off'
+
+    // Begin listening on the local port
+    Udp.begin(localPort);
+    Serial.print("Listening on UDP port: ");
+    Serial.println(localPort);
+
 }
 
 long requestTimer=millis();
@@ -552,6 +695,22 @@ bool debug=false;
 
 long timerToggleDHW=millis();
 long toggleDHWInterval=3600000;
+
+/*
+#include <esp_wifi.h>
+
+void readMacAddress(){
+  uint8_t baseMac[6];
+  esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, baseMac);
+  if (ret == ESP_OK) {
+    Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x\n",
+                  baseMac[0], baseMac[1], baseMac[2],
+                  baseMac[3], baseMac[4], baseMac[5]);
+  } else {
+    Serial.println("Failed to read MAC address");
+  }
+}
+  */
 
 void loop() {
 
@@ -610,6 +769,95 @@ void loop() {
     delay(300);
     Serial.println("Debug Toggled");
     debug=!debug;
+    uint8_t currentChannel = WiFi.channel();
+    Serial.print("Connected to AP on Channel: ");
+    Serial.println(currentChannel);
+    //readMacAddress();
+  }
+
+  // --- UDP Receiver: Parse the scalable datagram ---
+  int packetSize = Udp.parsePacket();
+
+  if (packetSize) {
+    // Received a packet
+    Serial.print("Received ");
+    Serial.print(packetSize);
+    Serial.print(" bytes from ");
+    Serial.print(Udp.remoteIP());
+    Serial.print(":");
+    Serial.println(Udp.remotePort());
+
+    int len = Udp.read(packetBuffer, 255);
+    if (len > 0) {
+      packetBuffer[len] = 0; // Null-terminate the string
+    }
+    String receivedDatagram = String(packetBuffer);
+    Serial.print("Packet contents: '");
+    Serial.print(receivedDatagram);
+    Serial.println("'");
+
+    // --- Parsing Logic ---
+    // Find key-value pairs
+    int startIndex = 0;
+    while (startIndex < receivedDatagram.length()) {
+      int equalsIndex = receivedDatagram.indexOf('=', startIndex);
+      int ampIndex = receivedDatagram.indexOf('&', startIndex);
+
+      if (equalsIndex == -1) break; // No more key-value pairs
+
+      String key = receivedDatagram.substring(startIndex, equalsIndex);
+      String value;
+
+      if (ampIndex == -1) {
+        // Last key-value pair
+        value = receivedDatagram.substring(equalsIndex + 1);
+        startIndex = receivedDatagram.length(); // End of parsing
+      } else {
+        value = receivedDatagram.substring(equalsIndex + 1, ampIndex);
+        startIndex = ampIndex + 1; // Move past the '&'
+      }
+
+      Serial.print("  Parsed: Key='");
+      Serial.print(key);
+      Serial.print("', Value='");
+      Serial.print(value);
+      Serial.println("'");
+
+      // Now you can act on the parsed data
+      if (key == "temp") {
+        float parsedTemp = value.toFloat();
+        temperatureIndoor=parsedTemp;
+        Serial.print("    Extracted Temperature: ");
+        Serial.println(parsedTemp, 1); // Print with 1 decimal place
+        // You can store or use parsedTemp here
+      } else if (key == "humidity") {
+        float parsedHumidity = value.toFloat();
+        humidityIndoor=parsedHumidity;
+        Serial.print("    Extracted Humidity: ");
+        Serial.println(parsedHumidity, 1);
+      } else if (key == "pressure") {
+        float parsedPressure = value.toFloat();
+        pressureInddor=parsedPressure;
+        Serial.print("    Extracted Pressure: ");
+        Serial.println(parsedPressure, 1);
+      } else if (key == "contactlessIR") {
+        float parsedContactlessIR = value.toFloat();
+        contactlessFloor=parsedContactlessIR;
+        Serial.print("    IR Temperature Pipe: ");
+        Serial.println(parsedContactlessIR, 1);
+      } else if (key == "contactlessAmbient") {
+        float parsedContactlessAmbient = value.toFloat();
+        contactlessAmbient=parsedContactlessAmbient;
+        Serial.print("    Pipe Ambient Temperature: ");
+        Serial.println(parsedContactlessAmbient, 1);
+      }
+      // Add more 'else if' blocks for other keys as you expand your datagram
+    }
+
+    // You can send a simple acknowledgement or reply if needed
+    // Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
+    // Udp.printf("ACK: Received datagram");
+    // Udp.endPacket();
   }
 
   delay(10);
